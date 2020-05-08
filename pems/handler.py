@@ -62,18 +62,12 @@ class PeMSHandler(object):
         # Get urls
         urls = self._get_urls(start_year=start_year, end_year=end_year, districts=districts, file_types=file_types)
 
-        # Loop through file types
+        # Loop through urls and collect available files
         for url in urls:
-
-            # Open url
             response = self._open_url(url=url['url'])
-
             if response:
-
-                # Collect files
                 files.extend(self._collect_available_files(file_type=url['file_type'], district=url['district'],
                                                            year=url['year'], response=response, months=months))
-
             else:
                 self.log.info('No data available for filetype: {}, year: {}, '
                               'district: {}'.format(url['file_type'], url['year'], url['district']))
