@@ -13,6 +13,7 @@ import json
 import time
 import locale
 import logging
+import itertools
 import mechanize
 import numpy as np
 import pandas as pd
@@ -21,6 +22,9 @@ from http.cookiejar import LWPCookieJar
 
 # Local imports
 from pems.settings import DATA_PATH, BASE_URL, DISTRICTS, CLEARING_HOUSE_URL
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.DEBUG)
 
 
 class PeMSHandler(object):
@@ -52,57 +56,89 @@ class PeMSHandler(object):
     def get_files(self, start_year, end_year, districts, file_types, months=None):
         """Return a list of available files for specific query."""
         # Storage for query responses
-        responses_json = dict()
-        responses_df = list()
+        files = list()
         locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 
+        # Get urls
+        urls = self._get_urls(start_year=start_year, end_year=end_year, districts=districts, file_types=file_types)
+
         # Loop through file types
-        for file_type in file_types:
-            responses_json[file_type] = dict()
-            for district in districts:
-                responses_json[file_type][district] = dict()
-                for year in [str(x) for x in range(start_year, end_year + 1)]:
-                    responses_json[file_type][district][year] = dict()
-                    self.browser.open(CLEARING_HOUSE_URL.format(BASE_URL, district, year, file_type))
-                    response = json.loads(self.browser.response().read())
-                    if len(response) > 0:
-                        responses_json[file_type][district][year] = response['data']
-                        if months is None:
-                            months_to_get = list(responses_json[file_type][district][year].keys())
-                        else:
-                            months_to_get = [month for month in months if month in
-                                             list(responses_json[file_type][district][year].keys())]
-                        for month in months_to_get:
-                            for file in responses_json[file_type][district][year][month]:
-                                responses_df.append({'file_type': file_type,
-                                                     'district': district,
-                                                     'year': year,
-                                                     'month': month,
-                                                     'file_name': file['file_name'],
-                                                     'file_id': file['file_id'],
-                                                     'megabites': np.round(locale.atof(file['bytes']) / 10 ** 6, 1),
-                                                     'url': file['url']})
-                    else:
-                        self.log.info('No data available for filetype: {}, year: {}, district: {}'.format(file_type,
-                                                                                                          year,
-                                                                                                          district))
+        for url in urls:
 
-        # Configure output
-        files_json = responses_json
-        files_df = pd.DataFrame(responses_df)
+            # Open url
+            response = self._open_url(url=url['url'])
 
-        return files_json, files_df
+            if response:
+
+                # Get available months that match user query
+                available_months = self._get_available_months(response=response, months=months)
+
+                # Collect file information
+                files.extend(self._collect_available_files(file_type=url['file_type'], district=url['district'],
+                                                           year=url['year'], response=response,
+                                                           months=available_months))
+
+            else:
+                self.log.info('No data available for filetype: {}, year: {}, '
+                              'district: {}'.format(url['file_type'], url['year'], url['district']))
+
+        return files
+
+    @staticmethod
+    def _collect_available_files(file_type, district, year, response, months):
+        """Return a list of dicts containing file meta data for months."""
+        files = list()
+        for month in months:
+            for file in response['data'][month]:
+                files.append({'file_type': file_type,
+                              'district': district,
+                              'year': year,
+                              'month': month,
+                              'file_name': file['file_name'],
+                              'file_id': file['file_id'],
+                              'megabites': np.round(locale.atof(file['bytes']) / 10 ** 6, 1),
+                              'download_url': file['url']})
+        return files
+
+    @staticmethod
+    def _get_available_months(response, months):
+        """Return a list of available months that match the user's query."""
+        if months is None:
+            return list(response['data'].keys())
+        else:
+            return [month for month in months if month in list(response['data'].keys())]
+
+    def _open_url(self, url):
+        """Open clearing house url and return json of contents."""
+        self.browser.open(url)
+        return json.loads(self.browser.response().read())
+
+    @staticmethod
+    def _get_list_of_years(start_year, end_year):
+        """Return a list of inclusive years between start_year and end_year."""
+        return [str(x) for x in range(start_year, end_year + 1)]
+
+    def _get_urls(self, start_year, end_year, districts, file_types):
+        """Return a list of clearing house urls corresponding to user's query."""
+        urls = list()
+        years = self._get_list_of_years(start_year=start_year, end_year=end_year)
+        for file_type, district, year in itertools.product(file_types, districts, years):
+            urls.append({'file_type': file_type,
+                         'district': district,
+                         'year': year,
+                         'url': CLEARING_HOUSE_URL.format(BASE_URL, district, year, file_type)})
+        return urls
 
     def download_files(self, start_year, end_year, districts, file_types, months, save_path=None):
-        """Download all text files for specific query."""
+        """Download all text files for user's query."""
         # Get query files
-        _, files_new = self.get_files(start_year=start_year, end_year=end_year, districts=districts,
-                                      file_types=file_types, months=months)
+        files_new = self.get_files(start_year=start_year, end_year=end_year, districts=districts,
+                                   file_types=file_types, months=months)
 
         if files_new.shape[0] > 0:
 
             # Create save path
-            save_path = self._get_save_path(save_path=save_path)
+            save_path = self._create_data_directory(save_path=save_path)
 
             # Check for existing downloads
             files, files_new = self._check_for_new_files(files_new=files_new, save_path=save_path)
@@ -111,7 +147,7 @@ class PeMSHandler(object):
                 for index, row in files_new.iterrows():
                     success = self._download_file(file_name=row['file_name'], file_url=row['url'], save_path=save_path)
                     if success:
-                        files.append(row, ignore_index=True, )
+                        files.append(row, ignore_index=True)
                     time.sleep(5)
 
                 # Save lookup csv
@@ -134,14 +170,11 @@ class PeMSHandler(object):
             return pd.DataFrame(data=[], columns=files_new.columns), files_new
 
     @staticmethod
-    def _get_save_path(save_path):
-        """Create and set save path."""
+    def _create_data_directory(save_path):
         if save_path is None:
-            os.makedirs(DATA_PATH, exist_ok=True)
-            return DATA_PATH
-        else:
-            os.makedirs(save_path, exist_ok=True)
-            return save_path
+            save_path = DATA_PATH
+        os.makedirs(save_path, exist_ok=True)
+        return save_path
 
     def _download_file(self, file_name, file_url, save_path):
         """Download single text file."""
