@@ -102,25 +102,16 @@ class PeMSHandler(object):
         if files_new.shape[0] > 0:
 
             # Create save path
-            if save_path is None:
-                save_path = DATA_PATH
-                os.makedirs(save_path, exist_ok=True)
-            else:
-                os.makedirs(save_path, exist_ok=True)
+            save_path = self._get_save_path(save_path=save_path)
 
             # Check for existing downloads
-            if os.path.exists(os.path.join(save_path, 'saved_files.csv')):
-                files = pd.read_csv(os.path.join(save_path, 'saved_files.csv'))
-                files_new = files_new[~files_new.isin(files)].dropna()
-            else:
-                files = pd.DataFrame(data=[], columns=files_new.columns)
+            files, files_new = self._check_for_new_files(files_new=files_new, save_path=save_path)
 
             if files_new.shape[0] > 0:
                 for index, row in files_new.iterrows():
-                    self.log.info('Start download, {}'.format(row['file_name']))
-                    self.browser.retrieve('{}{}'.format(BASE_URL, row['url']), os.path.join(save_path, row['file_name']))
-                    self.log.info('Download completed')
-                    files = files.append(row, ignore_index=True)
+                    success = self._download_file(file_name=row['file_name'], file_url=row['url'], save_path=save_path)
+                    if success:
+                        files.append(row, ignore_index=True, )
                     time.sleep(5)
 
                 # Save lookup csv
@@ -131,6 +122,37 @@ class PeMSHandler(object):
                 self.log.info('No new data to download')
         else:
             self.log.info('No data available to download')
+
+    @staticmethod
+    def _check_for_new_files(files_new, save_path):
+        """Check for files that have already been downloaded and remove them from download list."""
+        # Check for existing downloads
+        if os.path.exists(os.path.join(save_path, 'saved_files.csv')):
+            files = pd.read_csv(os.path.join(save_path, 'saved_files.csv'))
+            return files, files_new[~files_new.isin(files)].dropna()
+        else:
+            return pd.DataFrame(data=[], columns=files_new.columns), files_new
+
+    @staticmethod
+    def _get_save_path(save_path):
+        """Create and set save path."""
+        if save_path is None:
+            os.makedirs(DATA_PATH, exist_ok=True)
+            return DATA_PATH
+        else:
+            os.makedirs(save_path, exist_ok=True)
+            return save_path
+
+    def _download_file(self, file_name, file_url, save_path):
+        """Download single text file."""
+        try:
+            self.log.info('Start download, {}'.format(file_name))
+            self.browser.retrieve('{}{}'.format(BASE_URL, file_url), os.path.join(save_path, file_name))
+            self.log.info('Download completed')
+            return True
+        except Exception:
+            self.log.info('Error downloading {}}'.format(file_name))
+            return False
 
     @staticmethod
     def _logger_setup():
