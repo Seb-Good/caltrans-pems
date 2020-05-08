@@ -95,8 +95,7 @@ class PeMSHandler(object):
         """Return a list of available months that match the user's query."""
         if months is None:
             return list(response['data'].keys())
-        else:
-            return [month for month in months if month in list(response['data'].keys())]
+        return [month for month in months if month in list(response['data'].keys())]
 
     def _open_url(self, url):
         """Open clearing house url and return json of contents."""
@@ -119,45 +118,51 @@ class PeMSHandler(object):
                          'url': CLEARING_HOUSE_URL.format(BASE_URL, district, year, file_type)})
         return urls
 
+    @staticmethod
+    def _load_download_lookup(save_path):
+        """Import .csv containing information about which files have already been downloaded."""
+        if os.path.exists(os.path.join(save_path, 'saved_files.csv')):
+            return pd.read_csv(os.path.join(save_path, 'saved_files.csv'))
+        return pd.DataFrame()
+
     def download_files(self, start_year, end_year, districts, file_types, months, save_path=None):
         """Download all text files for user's query."""
-        # Get query files
-        files_new = self.get_files(start_year=start_year, end_year=end_year, districts=districts,
-                                   file_types=file_types, months=months)
+        # Create data directory
+        save_path = self._create_data_directory(save_path=save_path)
 
-        if files_new.shape[0] > 0:
+        # Get files to download
+        files_to_download = self.get_files(start_year=start_year, end_year=end_year, districts=districts,
+                                           file_types=file_types, months=months)
+        files_to_download = pd.DataFrame(files_to_download )
 
-            # Create save path
-            save_path = self._create_data_directory(save_path=save_path)
+        # Get existing files
+        files_downloaded = self._load_download_lookup(save_path=save_path)
 
-            # Check for existing downloads
-            files, files_new = self._check_for_new_files(files_new=files_new, save_path=save_path)
+        # Remove previously downloaded files
+        files_to_download = self._check_for_new_files(files_to_download=files_to_download,
+                                                      files_downloaded=files_downloaded)
 
-            if files_new.shape[0] > 0:
-                for index, row in files_new.iterrows():
-                    success = self._download_file(file_name=row['file_name'], file_url=row['url'], save_path=save_path)
-                    if success:
-                        files.append(row, ignore_index=True)
-                    time.sleep(5)
+        if not files_to_download.empty:
+            for index, row in files_to_download.iterrows():
+                success = self._download_file(file_name=row['file_name'],
+                                              file_url=row['download_url'], save_path=save_path)
+                if success:
+                    files_downloaded.append(row, ignore_index=True)
+                time.sleep(5)
 
-                # Save lookup csv
-                files.to_csv(os.path.join(save_path, 'saved_files.csv'), index=False)
-                self.log.info('Downloads complete, {} files, {} megabites'.format(
-                    files_new.shape[0], np.round(files_new['megabites'].sum(), 1)))
-            else:
-                self.log.info('No new data to download')
+            # Save lookup csv
+            files_downloaded.to_csv(os.path.join(save_path, 'saved_files.csv'), index=False)
+            self.log.info('Downloads complete, {} files, {} megabites'.format(
+                files_to_download.shape[0], np.round(files_to_download['megabites'].sum(), 1)))
         else:
             self.log.info('No data available to download')
 
     @staticmethod
-    def _check_for_new_files(files_new, save_path):
+    def _check_for_new_files(files_to_download, files_downloaded):
         """Check for files that have already been downloaded and remove them from download list."""
-        # Check for existing downloads
-        if os.path.exists(os.path.join(save_path, 'saved_files.csv')):
-            files = pd.read_csv(os.path.join(save_path, 'saved_files.csv'))
-            return files, files_new[~files_new.isin(files)].dropna()
-        else:
-            return pd.DataFrame(data=[], columns=files_new.columns), files_new
+        if files_downloaded.empty:
+            return files_to_download
+        return files_to_download[~files_to_download.isin(files_downloaded)].dropna()
 
     @staticmethod
     def _create_data_directory(save_path):
