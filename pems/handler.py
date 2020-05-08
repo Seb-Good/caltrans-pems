@@ -70,13 +70,9 @@ class PeMSHandler(object):
 
             if response:
 
-                # Get available months that match user query
-                available_months = self._get_available_months(response=response, months=months)
-
-                # Collect file information
+                # Collect files
                 files.extend(self._collect_available_files(file_type=url['file_type'], district=url['district'],
-                                                           year=url['year'], response=response,
-                                                           months=available_months))
+                                                           year=url['year'], response=response, months=months))
 
             else:
                 self.log.info('No data available for filetype: {}, year: {}, '
@@ -84,11 +80,11 @@ class PeMSHandler(object):
 
         return files
 
-    @staticmethod
-    def _collect_available_files(file_type, district, year, response, months):
+    def _collect_available_files(self, file_type, district, year, response, months):
         """Return a list of dicts containing file meta data for months."""
         files = list()
-        for month in months:
+        available_months = self._get_available_months(response=response, months=months)
+        for month in available_months:
             for file in response['data'][month]:
                 files.append({'file_type': file_type,
                               'district': district,
